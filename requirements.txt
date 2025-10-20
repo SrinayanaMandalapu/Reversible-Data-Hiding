@@ -1,0 +1,19 @@
+# Core libraries
+numpy==1.26.4
+opencv-python==4.10.0.84
+imageio==2.34.1
+pandas==2.2.2
+
+# For CNN (if you’ll use it later)
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# For progress and visualization (optional but recommended)
+tqdm==4.66.4
+matplotlib==3.9.0
+
+# For reproducibility and debugging
+scikit-image==0.24.0
+scipy==1.13.1
+tensorflow>=2.13.0

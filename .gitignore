@@ -1,0 +1,6 @@
+venv/
+ENV/
+*.pyc
+__pycache__/
+BOSSbase_1.01/
+*.pgm
