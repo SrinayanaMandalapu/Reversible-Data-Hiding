@@ -78,7 +78,7 @@ def hybrid_process(dataset_path, csv_path="metrics_hybrid.csv"):
             t0 = time.perf_counter()
             if label == "complex":
                 print(f"   ↳ Complex image detected (score={score:.2f}) → using CNN predictor")
-                pred = cnn_predictor(img, model)
+                pred = cnn_predictor(img, model )
             else:
                 print(f"   ↳ Normal image detected (score={score:.2f}) → using MED predictor")
                 pred = med_predictor(img)
