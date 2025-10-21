@@ -37,6 +37,8 @@ def hybrid_process(dataset_path, csv_path="metrics_hybrid.csv"):
     if os.path.exists(model_path):
         print("[INFO] Loading CNN model...")
         model = load_model(model_path, compile=False)
+        model.make_predict_function()  # preload graph
+
     else:
         print("[INFO] Training CNN model...")
         model = train_cnn_model(dataset_path, model_path=model_path)
@@ -75,9 +77,12 @@ def hybrid_process(dataset_path, csv_path="metrics_hybrid.csv"):
 
             t0 = time.perf_counter()
             if label == "complex":
+                print(f"   ↳ Complex image detected (score={score:.2f}) → using CNN predictor")
                 pred = cnn_predictor(img, model)
             else:
+                print(f"   ↳ Normal image detected (score={score:.2f}) → using MED predictor")
                 pred = med_predictor(img)
+
             total_time = time.perf_counter() - t0
 
             mse, psnr = evaluate(img, pred)
