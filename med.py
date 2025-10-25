@@ -20,11 +20,13 @@ from utils import classify_image
 # ----------------------- Utilities -----------------------
 
 def int_to_bits(x, bits=8):
-    return [(x >> (bits-1-i)) & 1 for i in range(bits)]
+    """Return MSB-first bits list length `bits`."""
+    return [ (x >> (bits-1-i)) & 1 for i in range(bits) ]
 
-def bits_to_int(bits):
+def bits_to_int(bits_list):
+    """Convert MSB-first bits list back to integer."""
     v = 0
-    for b in bits:
+    for b in bits_list:
         v = (v << 1) | (int(b) & 1)
     return int(v)
 
@@ -69,44 +71,129 @@ def med_predictor_pixel(rec, i, j):
 
 # ----------------------- Label map generation -----------------------
 
+# def label_map_generation(img, predictor='MED', cnn_model=None):
+#     """
+#     Generate label map using either MED or CNN predictor.
+#     """
+#     h, w = img.shape
+#     label = np.full((h, w), -1, dtype=np.int8)
+#     counts = Counter()
+
+#     for i in range(h):
+#         for j in range(w):
+#             if i == 0 or j == 0:
+#                 counts[-1] += 1
+#                 continue
+
+#             # --- choose predictor ---
+#             if predictor == 'CNN' and cnn_model is not None:
+#                 p = cnn_predictor(img, i, j, cnn_model)
+#             else:
+#                 # MED predictor
+#                 a = int(img[i, j-1])
+#                 b = int(img[i-1, j])
+#                 c = int(img[i-1, j-1])
+#                 p = a + b - c  # MED formula
+
+#             # label generation logic stays same
+#             x = int(img[i, j])
+#             xb = int_to_bits(x, 8)
+#             pb = int_to_bits(p, 8)
+#             t = 0
+#             for k in range(8):
+#                 if xb[k] == pb[k]:
+#                     t += 1
+#                 else:
+#                     break
+#             label[i, j] = t
+#             counts[t] += 1
+
+#     return label, counts
+
 def label_map_generation(img, predictor='MED', cnn_model=None):
     """
-    Generate label map using either MED or CNN predictor.
+    Generate label map using either MED or hybrid (MED + CNN) predictor.
+    Ensures reversible predictions with integer outputs.
     """
     h, w = img.shape
     label = np.full((h, w), -1, dtype=np.int8)
     counts = Counter()
 
-    for i in range(h):
-        for j in range(w):
-            if i == 0 or j == 0:
-                counts[-1] += 1
-                continue
+    if predictor == 'CNN':
+        if cnn_model is None:
+            raise ValueError("CNN predictor selected but no cnn_model provided")
 
-            # --- choose predictor ---
-            if predictor == 'CNN' and cnn_model is not None:
-                p = cnn_predictor(img, i, j, cnn_model)
-            else:
-                # MED predictor
-                a = int(img[i, j-1])
-                b = int(img[i-1, j])
-                c = int(img[i-1, j-1])
-                p = a + b - c  # MED formula
+        # --- Step 1: run CNN once to get predicted map ---
+        from cnn import cnn_predictor
+        predicted_map = cnn_predictor(img, cnn_model)  # shape same as img
 
-            # label generation logic stays same
-            x = int(img[i, j])
-            xb = int_to_bits(x, 8)
-            pb = int_to_bits(p, 8)
-            t = 0
-            for k in range(8):
-                if xb[k] == pb[k]:
-                    t += 1
+        # Ensure pixel range [0,255] and type uint8
+        if predicted_map.dtype != np.uint8:
+            predicted_map = np.rint(predicted_map * 255).clip(0, 255).astype(np.uint8)
+
+        # --- Step 2: compute MED predictor map ---
+        from med import med_predictor
+        med_map = med_predictor(img).astype(np.uint8)
+
+        # --- Step 3: combine CNN + MED into a hybrid predictor (integer average) ---
+        predicted_map = ((predicted_map.astype(np.int32) + med_map.astype(np.int32)) // 2).astype(np.uint8)
+
+        # --- Step 4: generate label map using hybrid predictions ---
+        for i in range(h):
+            for j in range(w):
+                if i == 0 or j == 0:
+                    counts[-1] += 1
+                    continue
+                p = int(predicted_map[i, j])
+                x = int(img[i, j])
+                xb = int_to_bits(x, 8)
+                pb = int_to_bits(p, 8)
+                t = 0
+                for k in range(8):
+                    if xb[k] == pb[k]:
+                        t += 1
+                    else:
+                        break
+                label[i, j] = t
+                counts[t] += 1
+
+    else:
+        # --- MED-only predictor path (unchanged) ---
+        for i in range(h):
+            for j in range(w):
+                if i == 0 or j == 0:
+                    counts[-1] += 1
+                    continue
+
+                a = int(img[i, j-1])      # left
+                b = int(img[i-1, j])      # top
+                c = int(img[i-1, j-1])    # top-left
+
+                # --- True MED predictor (same as med_predictor_pixel) ---
+                if c <= min(a, b):
+                    p = max(a, b)
+                elif c >= max(a, b):
+                    p = min(a, b)
                 else:
-                    break
-            label[i, j] = t
-            counts[t] += 1
+                    p = a + b - c
+
+                # --- Bitwise match counting ---
+                x = int(img[i, j])
+                xb = int_to_bits(x, 8)
+                pb = int_to_bits(p, 8)
+                t = 0
+                for k in range(8):
+                    if xb[k] == pb[k]:
+                        t += 1
+                    else:
+                        break
+                label[i, j] = t
+                counts[t] += 1
+
 
     return label, counts
+
+
 
 
 # ----------------------- Huffman-like mapping -----------------------
@@ -141,76 +228,89 @@ def encode_label_map(label, mapping):
 
 # ----------------------- Encryption -----------------------
 
-def generate_prng_matrix(shape, key):
-    rng = np.random.RandomState(abs(hash(key)) % (2**32))
-    return rng.randint(0,256,size=shape,dtype=np.uint8)
+def generate_prng(enc_key, shape):
+    """Deterministic pseudo-random generator based on key and image shape."""
+    np.random.seed(sum(ord(c) for c in enc_key))  # basic key-based seed
+    return np.random.randint(0, 256, size=shape, dtype=np.uint8)
 
-def encrypt_image(img, key):
-    r = generate_prng_matrix(img.shape, key)
-    return np.bitwise_xor(img, r), r
+def encrypt_image(img, enc_key):
+    """Reversible encryption using modular addition."""
+    prng_mat = generate_prng(enc_key, img.shape)
+    encrypted = (img.astype(np.uint16) + prng_mat.astype(np.uint16)) % 256
+    return encrypted.astype(np.uint8), prng_mat
 
-def decrypt_image(encrypted_img, key):
-    r = generate_prng_matrix(encrypted_img.shape, key)
-    return np.bitwise_xor(encrypted_img, r)
+def decrypt_image(encrypted, enc_key, prng_mat=None):
+    """Perfectly invertible decryption using modular subtraction."""
+    if prng_mat is None:
+        prng_mat = generate_prng(enc_key, encrypted.shape)
+    decrypted = (encrypted.astype(np.uint16) - prng_mat.astype(np.uint16)) % 256
+    return decrypted.astype(np.uint8)
+
 
 # ----------------------- Embed auxiliary bits (multi-MSB) -----------------------
 
 def embed_aux_into_encrypted(encrypted_img, label, aux_bits):
-    """Embed auxiliary bits (label-map coded) into encrypted image via multi-MSB substitution (Eq.11).
-    Scans pixels row-major skipping first row/col (reference).
-    Returns modified encrypted image and number of bits embedded.
     """
-    h,w = encrypted_img.shape
+    Multi-MSB embedding: for each pixel (skip first row/col),
+    write (t+1) MSBs with the next aux bits (MSB-first).
+    Returns modified encrypted image and number of bits written.
+    """
+    h, w = encrypted_img.shape
     out = encrypted_img.copy()
     bit_idx = 0
     total = len(aux_bits)
     for i in range(h):
         for j in range(w):
-            if i==0 or j==0:
+            if i == 0 or j == 0:
                 continue
-            t = int(label[i,j])
+            t = int(label[i, j])
             if t < 0:
                 continue
-            num_bits = (t+1) if t <= 7 else 8
-            # take next num_bits from aux_bits (pad with zeros if exhausted)
+            num_bits = (t + 1) if t <= 7 else 8
+            # take next num_bits
             if bit_idx + num_bits <= total:
-                to_write = aux_bits[bit_idx:bit_idx+num_bits]
+                to_write = aux_bits[bit_idx:bit_idx + num_bits]
                 bit_idx += num_bits
             else:
+                # pad remaining with zeros
                 remaining = max(0, total - bit_idx)
                 if remaining > 0:
-                    to_write = aux_bits[bit_idx:bit_idx+remaining] + '0'*(num_bits-remaining)
+                    to_write = aux_bits[bit_idx:bit_idx + remaining] + '0' * (num_bits - remaining)
                     bit_idx = total
                 else:
-                    to_write = '0'*num_bits
-            pixel = int(out[i,j])
-            lower_mask = (1 << (8-num_bits)) - 1
+                    to_write = '0' * num_bits
+
+            pixel = int(out[i, j])
+            # preserve lower (8-num_bits) bits
+            lower_mask = (1 << (8 - num_bits)) - 1
             lower = pixel & lower_mask
-            new_pixel = (bits_to_int(list(to_write)) << (8-num_bits)) | lower
-            out[i,j] = np.uint8(new_pixel)
+            top_val = bits_to_int(list(to_write))  # to_write is MSB-first
+            new_pixel = (top_val << (8 - num_bits)) | lower
+            out[i, j] = np.uint8(new_pixel)
     return out, bit_idx
 
-# ----------------------- Extract auxiliary bits -----------------------
 
+# ---------- extract auxiliary bits ----------
 def extract_aux_from_encrypted(encrypted_img, label, aux_length_bits):
-    """Extract auxiliary bits by scanning pixels and reading (t+1) MSBs from each pixel.
-    Returns extracted bitstring of length aux_length_bits (truncated if more bits are read).
     """
-    h,w = encrypted_img.shape
-    bits = []
-    read = 0
+    Read (t+1) MSBs from each pixel (skip first row/col) in the same order
+    used during embedding. Return the extracted bitstring truncated to aux_length_bits.
+    """
+    h, w = encrypted_img.shape
     parts = []
+    read = 0
     for i in range(h):
         for j in range(w):
-            if i==0 or j==0:
+            if i == 0 or j == 0:
                 continue
-            t = int(label[i,j])
+            t = int(label[i, j])
             if t < 0:
                 continue
-            num_bits = (t+1) if t <= 7 else 8
-            pixel = int(encrypted_img[i,j])
-            msb = (pixel >> (8-num_bits)) & ((1<<num_bits)-1)
-            bits_part = bin(msb)[2:].zfill(num_bits)
+            num_bits = (t + 1) if t <= 7 else 8
+            pixel = int(encrypted_img[i, j])
+            # read top num_bits MSBs
+            msb = (pixel >> (8 - num_bits)) & ((1 << num_bits) - 1)
+            bits_part = bin(msb)[2:].zfill(num_bits)  # MSB-first string
             parts.append(bits_part)
             read += num_bits
             if read >= aux_length_bits:
@@ -256,36 +356,41 @@ def decode_label_map_from_bits(bitstring, rev_map, shape):
 # ----------------------- Image recovery -----------------------
 
 def recover_image_from_decrypted(decrypted_img, label):
-    """Recover original image from decrypted image and label map using MED predictor and Eq.(12).
-    This version computes the MED predictor per-pixel using already reconstructed neighbors (correct order).
     """
-    h,w = decrypted_img.shape
-    rec = decrypted_img.copy().astype(int)  # working array
-    # IMPORTANT: we must reconstruct pixels in scan order (top->bottom, left->right).
+    Recover the original image from decrypted image and label map using MED predictor and Eq.(12).
+    Uses MSB-first bit ordering.
+    """
+    h, w = decrypted_img.shape
+    rec = decrypted_img.copy().astype(int)
+
     for i in range(h):
         for j in range(w):
             if i == 0 or j == 0:
-                # reference pixels: paper uses them as-is (they may have been stored separately).
-                rec[i,j] = int(decrypted_img[i,j])
+                rec[i, j] = int(decrypted_img[i, j])
                 continue
-            t = int(label[i,j])
+
+            t = int(label[i, j])
+
+            # Predictor using already reconstructed neighbors
+            px = med_predictor_pixel(rec, i, j)
+
             if t == 8:
-                # x = px
-                px = med_predictor_pixel(rec, i, j)
-                rec[i,j] = int(px)
+                rec[i, j] = int(px)
             else:
-                px = med_predictor_pixel(rec, i, j)
+                # Convert to bits (MSB-first)
                 p_bits = int_to_bits(px, 8)
-                # construct recovered x bits
+                dec_bits = int_to_bits(int(decrypted_img[i, j]), 8)
+
+                # Build the recovered pixel bits
                 x_bits = p_bits.copy()
-                # flip the (t+1)-th bit
+
+                # Flip the (t)-th bit
                 x_bits[t] = 1 - p_bits[t]
-                # copy remaining (7-t) bits from decrypted pixel
-                pixel_decrypted = int(decrypted_img[i, j])
-                dec_bits = int_to_bits(pixel_decrypted, 8)
-                # last (7-t) bits = decrypted’s last (7-t)
+
+                # Copy remaining bits (after t) from decrypted image
                 for k in range(t+1, 8):
                     x_bits[k] = dec_bits[k]
+
                 rec[i, j] = bits_to_int(x_bits)
 
     return np.clip(rec, 0, 255).astype(np.uint8)

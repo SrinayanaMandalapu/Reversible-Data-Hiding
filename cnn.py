@@ -102,103 +102,84 @@ def create_training_data(dataset_path, patch_size=9, max_images=None):
     X = X.reshape(-1, patch_size, patch_size, 1) / 255.0
     return X, y
 
-# ----------------------- Predict using CNN -----------------------
-# def cnn_predictor(img, model):
-#     patch_size = model.input_shape[1]
-#     pad = patch_size // 2
-#     img_padded = np.pad(img, pad, mode='reflect')
-#     h, w = img.shape
-#     pred = np.zeros_like(img, dtype=np.float32)
 
+# 
+# def cnn_predictor(img, model, patch_size=None, batch_size=256):
+#     """
+#     Predicts a full grayscale image using patch-based CNN.
+#     Ensures uint8 output (0–255) for reversible operations.
+#     """
+#     if patch_size is None:
+#         patch_size = model.input_shape[1]  # e.g., 9
+
+#     pad = patch_size // 2
+#     img_padded = np.pad(img, pad, mode="reflect")
+#     h, w = img.shape
+#     pred = np.zeros((h, w), dtype=np.float32)
+
+#     # Collect patches
+#     patches, positions = [], []
 #     for i in range(h):
 #         for j in range(w):
-#             patch = img_padded[i:i + patch_size, j:j + patch_size].reshape(1, patch_size, patch_size, 1) / 255.0
-#             pred[i, j] = model.predict(patch, verbose=0)[0][0] * 255.0
+#             patch = img_padded[i:i+patch_size, j:j+patch_size].astype(np.float32) / 255.0
+#             patch = np.expand_dims(patch, axis=-1)
+#             patches.append(patch)
+#             positions.append((i, j))
 
-#     return np.clip(pred, 0, 255).astype(np.uint8)
+#     patches = np.array(patches, dtype=np.float32)
+
+#     # Predict in batches
+#     for start in range(0, len(patches), batch_size):
+#         end = start + batch_size
+#         batch = patches[start:end]
+#         preds = model.predict(batch, verbose=0)
+#         preds = np.clip(preds, 0, 1)  # ensure [0,1]
+#         for idx, (i, j) in enumerate(positions[start:end]):
+#             pred[i, j] = preds[idx][0] * 255.0
+
+#     # Round and clip to ensure integer pixel values
+#     pred = np.rint(pred).clip(0, 255).astype(np.uint8)
+#     return pred
+
 
 def cnn_predictor(img, model, patch_size=None, batch_size=256):
     """
-    Predicts output for a full grayscale image using a patch-based CNN.
-
-    Parameters:
-    - img: 2D numpy array (grayscale)
-    - model: trained Keras CNN model
-    - patch_size: size of patches (will use model.input_shape if None)
-    - batch_size: number of patches to predict at once
-
-    Returns:
-    - pred: 2D numpy array same size as input image
+    Predicts a full grayscale image using patch-based CNN.
+    Shows tqdm progress bar and ensures uint8 output (0–255).
     """
     if patch_size is None:
-        patch_size = model.input_shape[1]  # 9
+        patch_size = model.input_shape[1]  # e.g., 9
 
     pad = patch_size // 2
-    img_padded = np.pad(img, pad, mode='reflect')
+    img_padded = np.pad(img, pad, mode="reflect")
     h, w = img.shape
     pred = np.zeros((h, w), dtype=np.float32)
 
     # Collect all patches
-    patches = []
-    positions = []
-
+    patches, positions = [], []
     for i in range(h):
         for j in range(w):
             patch = img_padded[i:i+patch_size, j:j+patch_size].astype(np.float32) / 255.0
-            patch = np.expand_dims(patch, axis=-1)  # (patch_size, patch_size, 1)
+            patch = np.expand_dims(patch, axis=-1)
             patches.append(patch)
             positions.append((i, j))
 
-    patches = np.array(patches)
-    
-    # Predict in batches
+    patches = np.array(patches, dtype=np.float32)
+
+    # ✅ Predict in batches with progress bar
     for start in tqdm(range(0, len(patches), batch_size), desc="CNN prediction"):
         end = start + batch_size
         batch = patches[start:end]
         preds = model.predict(batch, verbose=0)
+        preds = np.clip(preds, 0, 1)  # ensure [0,1]
         for idx, (i, j) in enumerate(positions[start:end]):
             pred[i, j] = preds[idx][0] * 255.0
 
-    return np.clip(pred, 0, 255).astype(np.uint8)
+    # ✅ Round and clip for reversibility
+    pred = np.rint(pred).clip(0, 255).astype(np.uint8)
+    return pred
 
-# def cnn_predictor(img, model, target_size=(64, 64), channels=1):
-#     """
-#     Predicts output from a CNN model safely.
-    
-#     Parameters:
-#     - img: input image as numpy array
-#     - model: trained Keras CNN model
-#     - target_size: tuple of (height, width) the model expects
-#     - channels: number of channels the model expects (1 for grayscale, 3 for RGB)
-    
-#     Returns:
-#     - prediction from the model
-#     """
-#     try:
-#         # Resize image to the model's expected input size
-#         img_resized = cv2.resize(img, target_size)
 
-#         # Ensure the correct number of channels
-#         if channels == 1 and len(img_resized.shape) == 3:
-#             img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-#         elif channels == 3 and len(img_resized.shape) == 2:
-#             img_resized = cv2.cvtColor(img_resized, cv2.COLOR_GRAY2BGR)
-
-#         # Normalize pixel values
-#         img_resized = img_resized / 255.0
-
-#         # Add batch dimension and channel dimension if needed
-#         if channels == 1:
-#             img_resized = np.expand_dims(img_resized, axis=-1)  # (h, w, 1)
-#         img_resized = np.expand_dims(img_resized, axis=0)       # (1, h, w, c)
-
-#         # Make prediction
-#         prediction = model.predict(img_resized)
-#         return prediction
-
-#     except Exception as e:
-#         print("[CNN ERROR] during prediction:", e)
-#         return None
 
 # ----------------------- Train and save model -----------------------
 def train_cnn_model(dataset_path, model_path="cnn_model.h5"):
